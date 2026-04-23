@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -125,3 +126,89 @@ def test_dashboard_json_serializes_nested_models(monkeypatch) -> None:
     assert result.exit_code == 0
     assert '"assignments"' in result.output
     assert '"title": "Assignment"' in result.output
+
+
+def test_auth_profiles_lists_registered_and_cached_profiles(monkeypatch, tmp_path) -> None:
+    cache_dir = tmp_path / "cache"
+    state_dir = tmp_path / "state"
+    cache_dir.mkdir()
+    state_dir.mkdir()
+    monkeypatch.setattr(cli, "user_cache_dir", lambda _app: str(cache_dir))
+    monkeypatch.setattr(cli, "user_state_dir", lambda _app: str(state_dir))
+    (state_dir / "profiles.json").write_text(json.dumps(["main"], ensure_ascii=False), encoding="utf-8")
+    (cache_dir / "legacy.cookies.json").write_text("[]", encoding="utf-8")
+
+    secrets = {
+        ("default", "username"): "default-user",
+        ("default", "password"): "pw",
+        ("main", "username"): "main-user",
+        ("main", "password"): "pw",
+        ("main", "totp_secret"): "totp",
+        ("legacy", "username"): "legacy-user",
+    }
+
+    monkeypatch.setattr(
+        cli,
+        "_get_secret",
+        lambda key, profile=None: secrets.get((profile or cli.state.profile, key)),
+    )
+
+    result = runner.invoke(cli.app, ["auth", "profiles"])
+
+    assert result.exit_code == 0
+    assert "default" in result.output
+    assert "main" in result.output
+    assert "legacy" in result.output
+    assert "default-user" in result.output
+    assert "main-user" in result.output
+    assert "legacy-user" in result.output
+    assert "stored" in result.output
+    assert_no_heavy_table_border(result.output)
+
+
+def test_auth_forget_removes_profile_from_registry(monkeypatch, tmp_path) -> None:
+    cache_dir = tmp_path / "cache"
+    state_dir = tmp_path / "state"
+    cache_dir.mkdir()
+    state_dir.mkdir()
+    monkeypatch.setattr(cli, "user_cache_dir", lambda _app: str(cache_dir))
+    monkeypatch.setattr(cli, "user_state_dir", lambda _app: str(state_dir))
+    (state_dir / "profiles.json").write_text(json.dumps(["main"], ensure_ascii=False), encoding="utf-8")
+    (cache_dir / "main.cookies.json").write_text("[]", encoding="utf-8")
+
+    secrets = {
+        ("main", "username"): "main-user",
+        ("main", "password"): "pw",
+        ("main", "totp_secret"): "totp",
+    }
+
+    def fake_get_secret(key, *, profile=None):
+        return secrets.get((profile or cli.state.profile, key))
+
+    def fake_delete_secret(key, *, profile=None):
+        secrets.pop((profile or cli.state.profile, key), None)
+
+    monkeypatch.setattr(cli, "_get_secret", fake_get_secret)
+    monkeypatch.setattr(cli, "_delete_secret", fake_delete_secret)
+
+    result = runner.invoke(cli.app, ["--profile", "main", "auth", "forget"])
+
+    assert result.exit_code == 0
+    assert not (cache_dir / "main.cookies.json").exists()
+    assert not (state_dir / "profiles.json").exists()
+
+
+def test_profile_registry_migrates_legacy_cache_file_without_stripping(monkeypatch, tmp_path) -> None:
+    cache_dir = tmp_path / "cache"
+    state_dir = tmp_path / "state"
+    cache_dir.mkdir()
+    state_dir.mkdir()
+    monkeypatch.setattr(cli, "user_cache_dir", lambda _app: str(cache_dir))
+    monkeypatch.setattr(cli, "user_state_dir", lambda _app: str(state_dir))
+    (cache_dir / "profiles.json").write_text(json.dumps(["main "], ensure_ascii=False), encoding="utf-8")
+
+    profiles = cli._load_registered_profiles()
+
+    assert profiles == {"main "}
+    assert not (cache_dir / "profiles.json").exists()
+    assert json.loads((state_dir / "profiles.json").read_text(encoding="utf-8")) == ["main "]

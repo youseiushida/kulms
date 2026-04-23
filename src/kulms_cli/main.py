@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from getpass import getpass
 from pathlib import Path
@@ -10,7 +12,7 @@ from typing import Any
 
 import keyring
 import typer
-from platformdirs import user_cache_dir
+from platformdirs import user_cache_dir, user_state_dir
 from rich.console import Console
 from rich.table import Column, Table
 
@@ -45,16 +47,138 @@ def main(profile: str = typer.Option("default", "--profile", "-p", help="Credent
     state.profile = profile
 
 
+def _profile_name(profile: str | None = None) -> str:
+    return state.profile if profile is None else profile
+
+
 def _service_name(profile: str | None = None) -> str:
-    return f"kulms:{profile or state.profile}"
+    return f"kulms:{_profile_name(profile)}"
+
+
+def _cache_dir() -> Path:
+    return Path(user_cache_dir("kulms"))
+
+
+def _state_dir() -> Path:
+    return Path(user_state_dir("kulms"))
 
 
 def _session_path(profile: str | None = None) -> Path:
-    return Path(user_cache_dir("kulms")) / f"{profile or state.profile}.cookies.json"
+    return _cache_dir() / f"{_profile_name(profile)}.cookies.json"
 
 
 def _session_store(profile: str | None = None) -> JsonFileSessionStore:
     return JsonFileSessionStore(_session_path(profile))
+
+
+def _profiles_path() -> Path:
+    return _state_dir() / "profiles.json"
+
+
+def _legacy_profiles_path() -> Path:
+    return _cache_dir() / "profiles.json"
+
+
+def _load_profiles_from_path(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(data, list):
+        return set()
+    return {item for item in data if isinstance(item, str) and item != ""}
+
+
+def _load_registered_profiles() -> set[str]:
+    profiles = _load_profiles_from_path(_profiles_path())
+    legacy_path = _legacy_profiles_path()
+    legacy_profiles = _load_profiles_from_path(legacy_path)
+    if not legacy_profiles:
+        return profiles
+
+    merged = profiles | legacy_profiles
+    if merged != profiles or not _profiles_path().exists():
+        _save_registered_profiles(merged)
+    try:
+        legacy_path.unlink()
+    except OSError:
+        pass
+    return merged
+
+
+def _write_json_file(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fp:
+            fp.write(payload)
+        _chmod_private(tmp_path)
+        os.replace(tmp_path, path)
+        _chmod_private(path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _chmod_private(path: Path) -> None:
+    try:
+        path.chmod(0o600)
+    except OSError:
+        return
+
+
+def _save_registered_profiles(profiles: set[str]) -> None:
+    path = _profiles_path()
+    cleaned = {profile for profile in profiles if profile != ""}
+    if not cleaned:
+        if path.exists():
+            path.unlink()
+        return
+    _write_json_file(path, sorted(cleaned))
+
+
+def _register_profile(profile: str | None = None) -> None:
+    profiles = _load_registered_profiles()
+    profiles.add(_profile_name(profile))
+    _save_registered_profiles(profiles)
+
+
+def _unregister_profile(profile: str | None = None) -> None:
+    name = _profile_name(profile)
+    profiles = _load_registered_profiles()
+    profiles.discard(name)
+    _save_registered_profiles(profiles)
+
+
+def _profile_has_stored_credentials(profile: str) -> bool:
+    return any(_get_secret(key, profile=profile) is not None for key in ("username", "password", "totp_secret"))
+
+
+def _profile_has_any_state(profile: str) -> bool:
+    return _profile_has_stored_credentials(profile) or _session_path(profile).exists()
+
+
+def _session_profiles() -> set[str]:
+    cache_dir = _cache_dir()
+    if not cache_dir.exists():
+        return set()
+    suffix = ".cookies.json"
+    return {
+        path.name[: -len(suffix)]
+        for path in cache_dir.glob(f"*{suffix}")
+        if path.name.endswith(suffix) and path.name != suffix
+    }
+
+
+def _known_profiles() -> list[str]:
+    profiles = {"default", state.profile}
+    profiles.update(_load_registered_profiles())
+    profiles.update(_session_profiles())
+    return sorted(profile for profile in profiles if profile)
 
 
 def _get_secret(key: str, *, profile: str | None = None) -> str | None:
@@ -98,6 +222,7 @@ def _client(*, require_cached_session: bool = True) -> KULMSClient:
         load_session=True,
         trust_loaded_session=True,
     )
+    _register_profile()
     if require_cached_session and not client.has_cached_session:
         raise AuthExpiredError("No cached session. Run `kulms auth login`.")
     return client
@@ -229,6 +354,7 @@ def auth_login() -> None:
         _set_secret("totp_secret", totp_secret)
     else:
         _delete_secret("totp_secret")
+    _register_profile()
 
     client = _explicit_login_client(otp=otp)
     session = client.sessions.current()
@@ -242,6 +368,7 @@ def auth_refresh() -> None:
     if not _get_secret("totp_secret"):
         otp = typer.prompt("One-time password")
     client = _explicit_login_client(otp=otp)
+    _register_profile()
     session = client.sessions.current()
     client.save_session()
     console.print(f"[green]Session refreshed for {session.user_eid or _get_secret('username')}[/green]")
@@ -253,6 +380,8 @@ def auth_status() -> None:
     has_password = _get_secret("password") is not None
     has_totp = _get_secret("totp_secret") is not None
     session_file = _session_path()
+    if username or has_password or has_totp or session_file.exists():
+        _register_profile()
     console.print(f"Profile: [bold]{state.profile}[/bold]")
     console.print(f"Username: {username or '[missing]'}")
     console.print(f"Password: {'stored' if has_password else 'missing'}")
@@ -269,8 +398,33 @@ def auth_status() -> None:
     console.print(f"[green]Session: active ({session.user_eid or session.user_id})[/green]")
 
 
+@auth_app.command("profiles")
+def auth_profiles() -> None:
+    table = _table(
+        Column("Profile", no_wrap=True),
+        Column("Username", overflow="fold", ratio=3),
+        Column("Password", no_wrap=True),
+        Column("TOTP", no_wrap=True),
+        Column("Session cache", no_wrap=True),
+    )
+    for profile in _known_profiles():
+        username = _get_secret("username", profile=profile)
+        has_password = _get_secret("password", profile=profile) is not None
+        has_totp = _get_secret("totp_secret", profile=profile) is not None
+        table.add_row(
+            profile,
+            username or "[missing]",
+            "stored" if has_password else "missing",
+            "stored" if has_totp else "not stored",
+            "stored" if _session_path(profile).exists() else "missing",
+        )
+    console.print(table)
+
+
 @auth_app.command("logout")
 def auth_logout() -> None:
+    if _profile_has_any_state(state.profile):
+        _register_profile()
     _session_store().clear()
     console.print("[green]Session cache deleted[/green]")
 
@@ -280,6 +434,8 @@ def auth_forget() -> None:
     _session_store().clear()
     for key in ("username", "password", "totp_secret"):
         _delete_secret(key)
+    if not _profile_has_any_state(state.profile):
+        _unregister_profile()
     console.print("[green]Credentials and session cache deleted[/green]")
 
 
