@@ -1,5 +1,10 @@
 # kulms
 
+[![PyPI version](https://img.shields.io/pypi/v/kulms.svg)](https://pypi.org/project/kulms/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Context7 Indexed](https://img.shields.io/badge/Context7-Indexed-047857)](https://context7.com/youseiushida/kulms)
+[![Context7 llms.txt](https://img.shields.io/badge/Context7-llms.txt-047857)](https://context7.com/youseiushida/kulms/llms.txt)
+
 `kulms` は、京都大学の学習支援システム KULMS にアクセスするための Python クライアントと CLI です。KULMS は Sakai LMS 互換の環境です。
 
 Sakai Direct API を直接扱う代わりに、授業、授業資料、課題、お知らせ、カレンダーなど、KULMS の利用者が画面上で見慣れた単位で操作できる API と CLI を提供します。専用 API がまだない Direct API も `client.direct` や `kulms direct` から直接呼び出せます。
