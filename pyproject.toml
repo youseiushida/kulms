@@ -1,0 +1,33 @@
+[project]
+name = "kulms"
+version = "0.1.0"
+description = "Python client and CLI for KULMS/Sakai Direct API"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "keyring>=25.7.0",
+    "kuauth>=0.2.3",
+    "platformdirs>=4.9.6",
+    "pydantic>=2.13.3",
+    "rich>=15.0.0",
+    "typer>=0.24.2",
+]
+
+[project.scripts]
+kulms = "kulms_cli.main:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kulms", "src/kulms_cli"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

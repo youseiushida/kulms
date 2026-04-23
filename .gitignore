@@ -144,6 +144,12 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local agent/auth notes. May contain credentials.
+CLAUDE.md
+
+# Local downloads produced by the CLI.
+/KULMS/
+
 # Spyder project settings
 .spyderproject
 .spyproject
