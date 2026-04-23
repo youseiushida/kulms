@@ -1,6 +1,6 @@
 [project]
 name = "kulms"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python client and CLI for KULMS/Sakai Direct API"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,6 +13,10 @@ dependencies = [
     "rich>=15.0.0",
     "typer>=0.24.2",
 ]
+
+[project.urls]
+Repository = "https://github.com/youseiushida/kulms"
+Issues = "https://github.com/youseiushida/kulms/issues"
 
 [project.scripts]
 kulms = "kulms_cli.main:app"
